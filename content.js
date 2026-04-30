@@ -1,6 +1,6 @@
 // Detects PR status and user relevance, then notifies the background worker.
 
-const GROUP_TITLE = 'Review Queue';
+const GROUP_TITLE = 'Pull Requests';
 
 function getLoggedInUser() {
   return document.querySelector('meta[name="user-login"]')?.getAttribute('content') ?? null;

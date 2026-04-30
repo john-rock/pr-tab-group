@@ -1,7 +1,7 @@
-// Service worker: manages the "Review Queue" tab group.
+// Service worker: manages the "Pull Requests" tab group.
 // Auto-syncs PRs where the user is author or requested reviewer every 15 minutes.
 
-const GROUP_TITLE = 'Review Queue';
+const GROUP_TITLE = 'Pull Requests';
 const GROUP_COLOR = 'green';
 const PR_URL_PATTERN = /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/;
 const ALARM_NAME = 'pr-sync';
