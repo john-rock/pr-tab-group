@@ -1,6 +1,6 @@
-# PR Review Queue
+# Pull Requests
 
-Chrome extension that keeps your active GitHub pull requests in a dedicated tab group called `Review Queue`.
+Chrome extension that keeps your active GitHub pull requests in a dedicated tab group.
 
 It auto-syncs open PRs where you are:
 - the author, or
@@ -26,7 +26,7 @@ The extension checks every 15 minutes and can also be synced on demand from the 
 4. Click **Load unpacked**.
 5. Select this project folder.
 
-The extension should appear as **PR Review Queue**.
+The extension should appear as **Pull Requests**.
 
 ## First-Time Setup
 
@@ -100,5 +100,4 @@ When you edit files:
 - `manifest.json` - extension metadata and permissions
 - `background.js` - sync logic and tab group lifecycle
 - `popup.html` / `popup.css` / `popup.js` - popup UI and controls
-- `content.js` - content script stub (declared but not yet registered in manifest)
 - `make-icons.py` / `generate-icons.html` - icon generation helpers

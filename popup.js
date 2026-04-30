@@ -87,8 +87,16 @@ function renderSyncBar(syncState, hasToken) {
     const orgs = syncState.ssoOrgs ?? [];
     if (orgs.length > 0) {
       syncStatus.className = 'sync-status sso-warning';
-      syncStatus.innerHTML =
-        `⚠ Private repos excluded — <a href="https://github.com/settings/tokens" target="_blank">authorize token for SSO</a> (${orgs.join(', ')})`;
+      const link = document.createElement('a');
+      link.href = 'https://github.com/settings/tokens';
+      link.target = '_blank';
+      link.textContent = 'authorize token for SSO';
+      syncStatus.textContent = '';
+      syncStatus.append(
+        document.createTextNode('⚠ Private repos excluded — '),
+        link,
+        document.createTextNode(` (${orgs.join(', ')})`),
+      );
     } else {
       syncStatus.className = 'sync-status';
       syncStatus.textContent = `Synced ${ago} · ${n} PR${n !== 1 ? 's' : ''}`;

@@ -8,7 +8,7 @@ No build step. This is a plain Manifest V3 Chrome extension — edit files and r
 
 **To reload after changes:**
 1. Go to `chrome://extensions`
-2. Click **Reload** on **PR Review Queue**
+2. Click **Reload** on **Pull Requests**
 
 **To install for the first time:**
 1. `chrome://extensions` → enable Developer mode → Load unpacked → select this folder
@@ -29,7 +29,6 @@ The extension has two runtime contexts that communicate via `chrome.runtime.send
 - `refreshUI()` is the main render function; it also re-runs whenever `chrome.storage.onChanged` fires for `syncState`
 - `syncState` in `chrome.storage.local` drives status display: `no_token | syncing | ok | error`
 
-**`content.js`** — Minimal content script; currently unused beyond being declared in manifest.
 
 ## Key behaviors to preserve
 

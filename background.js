@@ -176,7 +176,7 @@ async function fetchMyPRs(token) {
 
     // GitHub includes this header when private org repos are filtered out
     // because the token hasn't been SSO-authorized for that org.
-    // e.g. "partial; organizations=dbtlabs,acme"
+    // e.g. "partial; organizations=myorg,acme"
     const ssoHeader = res.headers.get('X-GitHub-SSO') ?? '';
     const ssoMatch = ssoHeader.match(/organizations=([^\s;]+)/);
     if (ssoMatch) ssoMatch[1].split(',').forEach(o => ssoOrgs.add(o.trim()));
