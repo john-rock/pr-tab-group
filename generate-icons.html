@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html>
+<head><title>Icon Generator</title></head>
+<body>
+<p>Open the browser console and run <code>generateIcons()</code>, then download each canvas as a PNG named icon16.png, icon48.png, icon128.png.</p>
+<div id="canvases"></div>
+<script>
+function drawIcon(size) {
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+
+  const r = size / 2;
+  const scale = size / 128;
+
+  // Background circle
+  ctx.fillStyle = '#1a7f37';
+  ctx.beginPath();
+  ctx.arc(r, r, r, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Draw a simple git-branch / PR icon in white
+  ctx.strokeStyle = '#ffffff';
+  ctx.fillStyle = '#ffffff';
+  ctx.lineWidth = 8 * scale;
+  ctx.lineCap = 'round';
+
+  const cx = 64 * scale;
+
+  // Top node (source branch)
+  const topX = cx - 22 * scale;
+  const topY = 32 * scale;
+  // Bottom node (base)
+  const botX = cx - 22 * scale;
+  const botY = 96 * scale;
+  // Right node (PR head)
+  const rtX = cx + 22 * scale;
+  const rtY = 50 * scale;
+
+  // Vertical line (base branch)
+  ctx.beginPath();
+  ctx.moveTo(topX, topY + 9 * scale);
+  ctx.lineTo(botX, botY - 9 * scale);
+  ctx.stroke();
+
+  // Curve from top to right
+  ctx.beginPath();
+  ctx.moveTo(topX + 9 * scale, topY);
+  ctx.bezierCurveTo(cx + 22 * scale, topY, cx + 22 * scale, topY, rtX, rtY - 9 * scale);
+  ctx.stroke();
+
+  // Top dot
+  ctx.beginPath();
+  ctx.arc(topX, topY, 9 * scale, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Bottom dot
+  ctx.beginPath();
+  ctx.arc(botX, botY, 9 * scale, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Right dot
+  ctx.beginPath();
+  ctx.arc(rtX, rtY, 9 * scale, 0, Math.PI * 2);
+  ctx.fill();
+
+  return canvas;
+}
+
+function generateIcons() {
+  const container = document.getElementById('canvases');
+  container.innerHTML = '';
+  for (const size of [16, 48, 128]) {
+    const canvas = drawIcon(size);
+    canvas.style.margin = '8px';
+    canvas.style.border = '1px solid #ccc';
+
+    const link = document.createElement('a');
+    link.download = `icon${size}.png`;
+    link.href = canvas.toDataURL('image/png');
+    link.textContent = `Download icon${size}.png`;
+    link.style.display = 'block';
+
+    container.appendChild(canvas);
+    container.appendChild(link);
+  }
+}
+
+generateIcons();
+</script>
+</body>
+</html>
