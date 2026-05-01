@@ -55,8 +55,11 @@ async function getValidGroupId(windowId) {
 
   const groups = await chrome.tabGroups.query({ windowId, title: GROUP_TITLE });
   if (groups.length > 0) {
-    windowGroups.set(windowId, groups[0].id);
-    return groups[0].id;
+    // Prefer the lowest group id — that's the session-restored one, not a
+    // group the extension may have just created during the startup race.
+    const adopted = groups.reduce((a, b) => (a.id < b.id ? a : b));
+    windowGroups.set(windowId, adopted.id);
+    return adopted.id;
   }
 
   return null;
@@ -67,13 +70,32 @@ async function addTabToGroup(tabId, windowId) {
 
   if (existingGroupId != null) {
     await chrome.tabs.group({ groupId: existingGroupId, tabIds: [tabId] });
-  } else {
-    const groupId = await chrome.tabs.group({ tabIds: [tabId] });
-    await chrome.tabGroups.update(groupId, { title: GROUP_TITLE, color: GROUP_COLOR });
-    windowGroups.set(windowId, groupId);
+    await persistGroups();
+    return;
   }
 
+  // No active "Pull Requests" group in this window. If we've ever created one
+  // before, assume Chrome is holding a saved-group chip in the bookmark bar
+  // (we can't query saved groups via API). Creating a new group now would
+  // result in a second saved chip. Leave the tab ungrouped — when the user
+  // clicks the saved chip, tabGroups.onCreated will adopt it and absorb
+  // ungrouped PR tabs.
+  const { hasCreatedGroup = false } = await chrome.storage.local.get('hasCreatedGroup');
+  if (hasCreatedGroup) return;
+
+  const groupId = await chrome.tabs.group({ tabIds: [tabId] });
+  await chrome.tabGroups.update(groupId, { title: GROUP_TITLE, color: GROUP_COLOR });
+  windowGroups.set(windowId, groupId);
+  await chrome.storage.local.set({ hasCreatedGroup: true });
   await persistGroups();
+}
+
+async function absorbUngroupedPRTabs(windowId, groupId) {
+  const tabs = await chrome.tabs.query({ windowId, url: 'https://github.com/*/pull/*' });
+  const ungrouped = tabs.filter(t => t.groupId < 0).map(t => t.id);
+  if (ungrouped.length > 0) {
+    await chrome.tabs.group({ groupId, tabIds: ungrouped });
+  }
 }
 
 async function removeTabFromGroup(tabId) {
@@ -287,6 +309,14 @@ async function syncPRTabs() {
       }
     }
 
+    // If we've previously created a group but none is currently active in any
+    // window, Chrome is holding it as a saved-group chip. Don't open new PR
+    // tabs into the void — they'd be ungrouped and creating a new group would
+    // produce a duplicate saved chip. Wait until the user clicks the chip.
+    const { hasCreatedGroup = false } = await chrome.storage.local.get('hasCreatedGroup');
+    const anyActiveGroup = (await chrome.tabGroups.query({ title: GROUP_TITLE })).length > 0;
+    const canOpenNewTabs = !groupDismissed && (!hasCreatedGroup || anyActiveGroup);
+
     let opened = 0;
     for (const pr of prs) {
       const key = normalizeUrl(pr.html_url);
@@ -297,7 +327,7 @@ async function syncPRTabs() {
         if (enabled && !groupDismissed && existing.groupId < 0) {
           await addTabToGroup(existing.id, existing.windowId);
         }
-      } else if (!groupDismissed) {
+      } else if (canOpenNewTabs) {
         const tab = await chrome.tabs.create({ url: pr.html_url, active: false });
         if (enabled) await addTabToGroup(tab.id, tab.windowId);
         opened++;
@@ -332,9 +362,36 @@ chrome.runtime.onInstalled.addListener(async () => {
 chrome.runtime.onStartup.addListener(async () => {
   const alarm = await chrome.alarms.get(ALARM_NAME);
   if (!alarm) chrome.alarms.create(ALARM_NAME, { periodInMinutes: SYNC_INTERVAL_MINUTES });
+  // Wait until session restore settles before grouping/syncing — otherwise
+  // we race Chrome's restoration of the saved "Pull Requests" group and
+  // create a duplicate that ends up pinned in the bookmark bar.
+  await waitForSessionRestore();
   await groupExistingPRTabs();
   await syncPRTabs();
 });
+
+// Resolves once tab activity has been quiet for QUIET_MS (or after MAX_WAIT_MS).
+function waitForSessionRestore() {
+  const QUIET_MS = 2500;
+  const MAX_WAIT_MS = 15_000;
+  return new Promise(resolve => {
+    let lastEvent = Date.now();
+    const bump = () => { lastEvent = Date.now(); };
+    chrome.tabs.onCreated.addListener(bump);
+    chrome.tabs.onUpdated.addListener(bump);
+    chrome.tabGroups.onCreated.addListener(bump);
+    const start = Date.now();
+    const tick = setInterval(() => {
+      if (Date.now() - lastEvent >= QUIET_MS || Date.now() - start >= MAX_WAIT_MS) {
+        clearInterval(tick);
+        chrome.tabs.onCreated.removeListener(bump);
+        chrome.tabs.onUpdated.removeListener(bump);
+        chrome.tabGroups.onCreated.removeListener(bump);
+        resolve();
+      }
+    }, 500);
+  });
+}
 
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === ALARM_NAME) syncPRTabs();
@@ -463,6 +520,24 @@ async function handleTabUrl(tabId, url, windowId) {
   if (isPRUrl(url)) {
     const normalUrl = normalizeUrl(url);
 
+    // If the tab is already in a "Pull Requests" group (e.g. Chrome restored
+    // it from a saved group on startup), adopt that group instead of letting
+    // addTabToGroup race ahead and create a duplicate.
+    try {
+      const currentTab = await chrome.tabs.get(tabId);
+      if (currentTab.groupId >= 0) {
+        const group = await chrome.tabGroups.get(currentTab.groupId);
+        if (group.title === GROUP_TITLE) {
+          windowGroups.set(windowId, currentTab.groupId);
+          await persistGroups();
+          await mergeWindowGroups(windowId);
+          return;
+        }
+      }
+    } catch {
+      // Tab vanished or group lookup failed — fall through
+    }
+
     // If this PR is already open elsewhere, redirect to that tab instead.
     // Check grouped tabs first; fall back to any tab opened before this one
     // (lower tab ID = created earlier) to handle rapid double-clicks where
@@ -583,7 +658,14 @@ async function getStatus() {
 // Reactively merge duplicate "Pull Requests" groups — handles the race between
 // onStartup sync and Chrome's session restore finishing late.
 chrome.tabGroups.onCreated.addListener(async (group) => {
-  if (group.title === GROUP_TITLE) await mergeWindowGroups(group.windowId);
+  if (group.title !== GROUP_TITLE) return;
+  windowGroups.set(group.windowId, group.id);
+  await chrome.storage.local.set({ hasCreatedGroup: true });
+  await persistGroups();
+  await mergeWindowGroups(group.windowId);
+  // The user likely just clicked the saved-group chip — pull any ungrouped
+  // PR tabs in this window into the now-active group.
+  await absorbUngroupedPRTabs(group.windowId, windowGroups.get(group.windowId) ?? group.id);
 });
 chrome.tabGroups.onUpdated.addListener(async (group) => {
   if (group.title === GROUP_TITLE) await mergeWindowGroups(group.windowId);
