@@ -252,6 +252,7 @@ async function syncPRTabs() {
     }
 
     await chrome.storage.local.set({
+      lastPRs: prs.map(pr => ({ url: normalizeUrl(pr.html_url), title: pr.title })),
       syncState: {
         status: 'ok',
         lastSync: Date.now(),
@@ -353,23 +354,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 async function getStatus() {
-  const tabs = await chrome.tabs.query({ url: 'https://github.com/*/pull/*' });
-  const seen = new Set();
-  const uniqueTabs = [];
-  for (const tab of tabs) {
-    const key = normalizeUrl(tab.url);
-    if (!seen.has(key)) {
-      seen.add(key);
-      uniqueTabs.push({
-        id: tab.id,
-        title: tab.title,
-        url: tab.url,
-        favIconUrl: tab.favIconUrl,
-        windowId: tab.windowId,
-      });
-    }
-  }
-  return { tabs: uniqueTabs, groupCount: windowGroups.size };
+  const { lastPRs = [] } = await chrome.storage.local.get('lastPRs');
+  const openTabs = await chrome.tabs.query({ url: 'https://github.com/*/pull/*' });
+  const tabByUrl = new Map(openTabs.map(t => [normalizeUrl(t.url), t]));
+
+  const tabs = lastPRs.map(pr => {
+    const tab = tabByUrl.get(pr.url);
+    return {
+      title: pr.title,
+      url: pr.url,
+      favIconUrl: tab?.favIconUrl ?? null,
+      id: tab?.id ?? null,
+      windowId: tab?.windowId ?? null,
+    };
+  });
+
+  return { tabs, groupCount: windowGroups.size };
 }
 
 // ── Cleanup ───────────────────────────────────────────────────────────────────

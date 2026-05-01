@@ -176,8 +176,12 @@ function renderPRs(tabs) {
     li.appendChild(arrow);
 
     li.addEventListener('click', () => {
-      chrome.tabs.update(tab.id, { active: true });
-      chrome.windows.update(tab.windowId ?? chrome.windows.WINDOW_ID_CURRENT, { focused: true });
+      if (tab.id != null) {
+        chrome.tabs.update(tab.id, { active: true });
+        chrome.windows.update(tab.windowId, { focused: true });
+      } else {
+        chrome.tabs.create({ url: tab.url });
+      }
       window.close();
     });
 
