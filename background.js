@@ -461,10 +461,33 @@ async function handleTabUrl(tabId, url, windowId) {
   if (!enabled) return;
 
   if (isPRUrl(url)) {
+    const normalUrl = normalizeUrl(url);
+
+    // If this PR is already open elsewhere, redirect to that tab instead.
+    // Check grouped tabs first; fall back to any tab opened before this one
+    // (lower tab ID = created earlier) to handle rapid double-clicks where
+    // both tabs race before either is grouped.
+    const existingTabs = await chrome.tabs.query({ url: 'https://github.com/*/pull/*' });
+    const sameUrlTabs = existingTabs.filter(t => t.id !== tabId && normalizeUrl(t.url) === normalUrl);
+
+    const groupedTarget = sameUrlTabs.find(t => {
+      const groupId = windowGroups.get(t.windowId);
+      return groupId != null && t.groupId === groupId;
+    });
+    const priorTarget = sameUrlTabs.filter(t => t.id < tabId).sort((a, b) => a.id - b.id)[0];
+    const redirectTarget = groupedTarget ?? priorTarget;
+
+    if (redirectTarget) {
+      await chrome.tabs.update(redirectTarget.id, { active: true });
+      await chrome.windows.update(redirectTarget.windowId, { focused: true });
+      try { await chrome.tabs.remove(tabId); } catch { /* already closed */ }
+      return;
+    }
+
     // If this PR isn't in our list yet, refresh in the background so the popup
     // shows it immediately without waiting for the next 15-minute alarm.
     const { lastPRs = [] } = await chrome.storage.local.get('lastPRs');
-    if (!lastPRs.some(pr => pr.url === normalizeUrl(url))) {
+    if (!lastPRs.some(pr => pr.url === normalUrl)) {
       refreshPRList(); // fire-and-forget; rate-limited internally
     }
     await addTabToGroup(tabId, windowId);
