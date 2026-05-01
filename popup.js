@@ -18,7 +18,6 @@ const openSettingsBtn = document.getElementById('openSettingsBtn');
 const empty        = document.getElementById('empty');
 const errorMsg     = document.getElementById('error-msg');
 const errorDetail  = document.getElementById('errorDetail');
-const disabledMsg  = document.getElementById('disabled-msg');
 const prList       = document.getElementById('pr-list');
 
 
@@ -55,6 +54,33 @@ async function getGithubToken() {
   await chrome.storage.sync.remove('githubToken');
   return legacyToken;
 }
+
+// ── Theme ─────────────────────────────────────────────────────────────────────
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+}
+
+function updateThemeButtons(active) {
+  for (const btn of document.querySelectorAll('.theme-btn')) {
+    btn.classList.toggle('active', btn.dataset.theme === active);
+  }
+}
+
+async function initTheme() {
+  const { theme = 'system' } = await chrome.storage.sync.get('theme');
+  applyTheme(theme);
+  updateThemeButtons(theme);
+}
+
+document.getElementById('themePicker').addEventListener('click', async (e) => {
+  const btn = e.target.closest('.theme-btn');
+  if (!btn) return;
+  const theme = btn.dataset.theme;
+  await chrome.storage.sync.set({ theme });
+  applyTheme(theme);
+  updateThemeButtons(theme);
+});
 
 // ── Render helpers ────────────────────────────────────────────────────────────
 
@@ -105,7 +131,7 @@ function renderSyncBar(syncState, hasToken) {
 }
 
 function showContent(key) {
-  for (const el of [loading, setupEl, empty, errorMsg, disabledMsg, prList]) {
+  for (const el of [loading, setupEl, empty, errorMsg, prList]) {
     el.classList.add('hidden');
   }
   key.classList.remove('hidden');
@@ -178,11 +204,6 @@ async function refreshUI() {
 
   toggle.checked = enabled;
   renderSyncBar(syncState, !!githubToken);
-
-  if (!enabled) {
-    showContent(disabledMsg);
-    return;
-  }
 
   if (!githubToken) {
     showContent(setupEl);
@@ -315,4 +336,5 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
+initTheme();
 refreshUI();

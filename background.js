@@ -84,6 +84,21 @@ async function removeTabFromGroup(tabId) {
   }
 }
 
+async function ungroupPRTabs() {
+  for (const [, groupId] of windowGroups) {
+    try {
+      const tabs = await chrome.tabs.query({ groupId });
+      if (tabs.length > 0) {
+        await chrome.tabs.ungroup(tabs.map(t => t.id));
+      }
+    } catch {
+      // Group may no longer exist
+    }
+  }
+  windowGroups.clear();
+  await persistGroups();
+}
+
 async function checkAndCleanGroup(windowId, groupId) {
   try {
     const remainingTabs = await chrome.tabs.query({ groupId });
@@ -313,7 +328,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         .then(() => sendResponse({ success: true }))
         .catch(() => sendResponse({ success: false }));
     } else {
-      sendResponse({ success: true });
+      ungroupPRTabs()
+        .then(() => sendResponse({ success: true }))
+        .catch(() => sendResponse({ success: false }));
     }
     return true;
   }
@@ -336,24 +353,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 async function getStatus() {
-  const allTabs = [];
-  for (const [, groupId] of windowGroups) {
-    try {
-      const tabs = await chrome.tabs.query({ groupId });
-      for (const tab of tabs) {
-        allTabs.push({
-          id: tab.id,
-          title: tab.title,
-          url: tab.url,
-          favIconUrl: tab.favIconUrl,
-          windowId: tab.windowId,
-        });
-      }
-    } catch {
-      // Group no longer exists
+  const tabs = await chrome.tabs.query({ url: 'https://github.com/*/pull/*' });
+  const seen = new Set();
+  const uniqueTabs = [];
+  for (const tab of tabs) {
+    const key = normalizeUrl(tab.url);
+    if (!seen.has(key)) {
+      seen.add(key);
+      uniqueTabs.push({
+        id: tab.id,
+        title: tab.title,
+        url: tab.url,
+        favIconUrl: tab.favIconUrl,
+        windowId: tab.windowId,
+      });
     }
   }
-  return { tabs: allTabs, groupCount: windowGroups.size };
+  return { tabs: uniqueTabs, groupCount: windowGroups.size };
 }
 
 // ── Cleanup ───────────────────────────────────────────────────────────────────
