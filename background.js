@@ -9,6 +9,11 @@ const SYNC_INTERVAL_MINUTES = 15;
 
 // Map of windowId → groupId
 const windowGroups = new Map();
+// Track group IDs being removed as part of a merge so onRemoved doesn't set groupDismissed
+const mergingGroupIds = new Set();
+// Rate-limit per-PR status checks: normalUrl → timestamp
+const lastChecked = new Map();
+const CHECK_COOLDOWN_MS = 30_000;
 
 async function getGithubToken() {
   const { githubToken } = await chrome.storage.local.get('githubToken');
@@ -112,6 +117,26 @@ async function checkAndCleanGroup(windowId, groupId) {
   }
 }
 
+async function mergeWindowGroups(windowId) {
+  const groups = await chrome.tabGroups.query({ windowId, title: GROUP_TITLE });
+  if (groups.length <= 1) {
+    if (groups.length === 1) windowGroups.set(windowId, groups[0].id);
+    return;
+  }
+  const trackedId = windowGroups.get(windowId);
+  const primary = groups.find(g => g.id === trackedId) ?? groups[0];
+  const extras = groups.filter(g => g.id !== primary.id);
+  windowGroups.set(windowId, primary.id);
+  for (const extra of extras) {
+    mergingGroupIds.add(extra.id);
+    const tabs = await chrome.tabs.query({ groupId: extra.id });
+    if (tabs.length > 0) {
+      await chrome.tabs.group({ groupId: primary.id, tabIds: tabs.map(t => t.id) });
+    }
+  }
+  await persistGroups();
+}
+
 async function persistGroups() {
   const obj = {};
   for (const [winId, grpId] of windowGroups) obj[winId] = grpId;
@@ -130,6 +155,27 @@ async function restoreGroups() {
 restoreGroups();
 
 // ── GitHub API sync ───────────────────────────────────────────────────────────
+
+async function getGithubLogin(token) {
+  const { githubLogin } = await chrome.storage.local.get('githubLogin');
+  if (githubLogin) return githubLogin;
+
+  try {
+    const res = await fetch('https://api.github.com/user', {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    });
+    if (!res.ok) return null;
+    const user = await res.json();
+    await chrome.storage.local.set({ githubLogin: user.login });
+    return user.login;
+  } catch {
+    return null;
+  }
+}
 
 async function validateToken(token) {
   const res = await fetch('https://api.github.com/user', {
@@ -213,8 +259,15 @@ async function syncPRTabs() {
   await chrome.storage.local.set({ syncState: { status: 'syncing' } });
 
   try {
+    // Re-discover existing PR groups (handles session restore / SW restart),
+    // and merge any duplicates down to one group per window.
+    const foundGroups = await chrome.tabGroups.query({ title: GROUP_TITLE });
+    const windowIds = new Set(foundGroups.map(g => g.windowId));
+    for (const windowId of windowIds) await mergeWindowGroups(windowId);
+
     const { prs, ssoOrgs } = await fetchMyPRs(githubToken);
     const { enabled = true } = await chrome.storage.sync.get('enabled');
+    const { groupDismissed = false } = await chrome.storage.local.get('groupDismissed');
 
     const existingTabs = await chrome.tabs.query({ url: 'https://github.com/*/pull/*' });
     const existingByUrl = new Map(existingTabs.map(t => [normalizeUrl(t.url), t]));
@@ -241,10 +294,10 @@ async function syncPRTabs() {
 
       if (existing) {
         // Tab already open — group it if it isn't already
-        if (enabled && existing.groupId < 0) {
+        if (enabled && !groupDismissed && existing.groupId < 0) {
           await addTabToGroup(existing.id, existing.windowId);
         }
-      } else {
+      } else if (!groupDismissed) {
         const tab = await chrome.tabs.create({ url: pr.html_url, active: false });
         if (enabled) await addTabToGroup(tab.id, tab.windowId);
         opened++;
@@ -287,6 +340,120 @@ chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === ALARM_NAME) syncPRTabs();
 });
 
+// ── Reactive PR removal ───────────────────────────────────────────────────────
+
+async function removePRFromTracking(normalUrl) {
+  const { lastPRs = [] } = await chrome.storage.local.get('lastPRs');
+  const updated = lastPRs.filter(pr => pr.url !== normalUrl);
+  await chrome.storage.local.set({ lastPRs: updated });
+
+  const prTabs = await chrome.tabs.query({ url: 'https://github.com/*/pull/*' });
+  for (const tab of prTabs) {
+    if (normalizeUrl(tab.url) !== normalUrl) continue;
+    const groupId = windowGroups.get(tab.windowId);
+    if (groupId == null || tab.groupId !== groupId) continue;
+
+    if (tab.active) {
+      await chrome.tabs.ungroup([tab.id]);
+    } else {
+      await chrome.tabs.remove(tab.id);
+    }
+  }
+}
+
+async function checkAndMaybeRemovePR(tabId, url) {
+  const normalUrl = normalizeUrl(url);
+  const now = Date.now();
+  if ((lastChecked.get(normalUrl) ?? 0) + CHECK_COOLDOWN_MS > now) return;
+  lastChecked.set(normalUrl, now);
+
+  const { lastPRs = [] } = await chrome.storage.local.get('lastPRs');
+  if (!lastPRs.some(pr => pr.url === normalUrl)) return;
+
+  const token = await getGithubToken();
+  if (!token) return;
+
+  const match = normalUrl.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+  if (!match) return;
+  const [, owner, repo, pullNumber] = match;
+
+  const headers = {
+    'Authorization': `Bearer ${token}`,
+    'Accept': 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+  };
+
+  try {
+    const prRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
+      { headers }
+    );
+    if (!prRes.ok) return;
+    const pr = await prRes.json();
+
+    if (pr.state === 'closed') {
+      await removePRFromTracking(normalUrl);
+      return;
+    }
+
+    const login = await getGithubLogin(token);
+    if (!login) return;
+
+    const reviewsRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}/reviews?per_page=100`,
+      { headers }
+    );
+    if (!reviewsRes.ok) return;
+    const reviews = await reviewsRes.json();
+
+    const userApproved = reviews.some(
+      r => r.user?.login === login && r.state === 'APPROVED'
+    );
+    if (userApproved) await removePRFromTracking(normalUrl, tabId);
+  } catch {
+    // Ignore API errors
+  }
+}
+
+// ── Lightweight PR list refresh (no tab open/close side-effects) ──────────────
+
+let lastRefreshTime = 0;
+const REFRESH_COOLDOWN_MS = 60_000;
+
+async function refreshPRList() {
+  const now = Date.now();
+  if (now - lastRefreshTime < REFRESH_COOLDOWN_MS) return;
+  lastRefreshTime = now;
+
+  const token = await getGithubToken();
+  if (!token) return;
+
+  try {
+    const { prs, ssoOrgs } = await fetchMyPRs(token);
+    const { enabled = true } = await chrome.storage.sync.get('enabled');
+    const { groupDismissed = false } = await chrome.storage.local.get('groupDismissed');
+
+    const newPRs = prs.map(pr => ({ url: normalizeUrl(pr.html_url), title: pr.title }));
+    await chrome.storage.local.set({
+      lastPRs: newPRs,
+      syncState: { status: 'ok', lastSync: now, total: prs.length, ssoOrgs },
+    });
+
+    // Group any open tabs for PRs in the updated list that aren't grouped yet
+    if (enabled && !groupDismissed) {
+      const openUrls = new Set(newPRs.map(pr => pr.url));
+      const existingTabs = await chrome.tabs.query({ url: 'https://github.com/*/pull/*' });
+      for (const tab of existingTabs) {
+        if (openUrls.has(normalizeUrl(tab.url)) && tab.groupId < 0) {
+          await addTabToGroup(tab.id, tab.windowId);
+        }
+      }
+    }
+  } catch {
+    // Ignore — next full sync will catch up
+  }
+}
+
 // ── React to tab URL changes ──────────────────────────────────────────────────
 
 async function handleTabUrl(tabId, url, windowId) {
@@ -294,6 +461,12 @@ async function handleTabUrl(tabId, url, windowId) {
   if (!enabled) return;
 
   if (isPRUrl(url)) {
+    // If this PR isn't in our list yet, refresh in the background so the popup
+    // shows it immediately without waiting for the next 15-minute alarm.
+    const { lastPRs = [] } = await chrome.storage.local.get('lastPRs');
+    if (!lastPRs.some(pr => pr.url === normalizeUrl(url))) {
+      refreshPRList(); // fire-and-forget; rate-limited internally
+    }
     await addTabToGroup(tabId, windowId);
   } else {
     await removeTabFromGroup(tabId);
@@ -301,13 +474,19 @@ async function handleTabUrl(tabId, url, windowId) {
 }
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  if (!changeInfo.url) return;
-  await handleTabUrl(tabId, changeInfo.url, tab.windowId);
+  if (changeInfo.url) {
+    await handleTabUrl(tabId, changeInfo.url, tab.windowId);
+  }
+
+  if (changeInfo.status === 'complete' && isPRUrl(tab.url)) {
+    await checkAndMaybeRemovePR(tabId, tab.url);
+  }
 });
 
 async function groupExistingPRTabs() {
   const { enabled = true } = await chrome.storage.sync.get('enabled');
-  if (!enabled) return;
+  const { groupDismissed = false } = await chrome.storage.local.get('groupDismissed');
+  if (!enabled || groupDismissed) return;
 
   const tabs = await chrome.tabs.query({ url: 'https://github.com/*/pull/*' });
   for (const tab of tabs) await addTabToGroup(tab.id, tab.windowId);
@@ -338,13 +517,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'VALIDATE_TOKEN') {
     validateToken(message.token)
-      .then(result => sendResponse({ ok: true, ...result }))
+      .then(result => {
+        if (result.login) chrome.storage.local.set({ githubLogin: result.login });
+        sendResponse({ ok: true, ...result });
+      })
       .catch(err => sendResponse({ ok: false, error: err.message }));
     return true;
   }
 
   if (message.type === 'SYNC_NOW') {
-    syncPRTabs()
+    chrome.storage.local.set({ groupDismissed: false })
+      .then(() => syncPRTabs())
       .then(() => sendResponse({ success: true }))
       .catch(() => sendResponse({ success: false }));
     return true;
@@ -374,13 +557,30 @@ async function getStatus() {
 
 // ── Cleanup ───────────────────────────────────────────────────────────────────
 
+// Reactively merge duplicate "Pull Requests" groups — handles the race between
+// onStartup sync and Chrome's session restore finishing late.
+chrome.tabGroups.onCreated.addListener(async (group) => {
+  if (group.title === GROUP_TITLE) await mergeWindowGroups(group.windowId);
+});
+chrome.tabGroups.onUpdated.addListener(async (group) => {
+  if (group.title === GROUP_TITLE) await mergeWindowGroups(group.windowId);
+});
+
 chrome.tabGroups.onRemoved.addListener(async (group) => {
+  if (mergingGroupIds.has(group.id)) {
+    mergingGroupIds.delete(group.id);
+    return; // Removed as part of a merge — don't treat as user dismissal
+  }
   for (const [winId, grpId] of windowGroups) {
     if (grpId === group.id) {
       windowGroups.delete(winId);
       await persistGroups();
       break;
     }
+  }
+  // Check title directly — windowGroups may already be cleared by tabs.onRemoved
+  if (group.title === GROUP_TITLE) {
+    await chrome.storage.local.set({ groupDismissed: true });
   }
 });
 
