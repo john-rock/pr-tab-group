@@ -151,15 +151,7 @@ function renderPRs(tabs) {
     li.title = tab.title;
 
     const faviconWrapper = document.createElement('span');
-    if (tab.favIconUrl) {
-      const img = document.createElement('img');
-      img.className = 'pr-favicon';
-      img.src = tab.favIconUrl;
-      img.onerror = () => img.replaceWith(makeFallbackIcon());
-      faviconWrapper.appendChild(img);
-    } else {
-      faviconWrapper.appendChild(makeFallbackIcon());
-    }
+    faviconWrapper.appendChild(tab.approved ? makeApprovedIcon() : makePRIcon());
 
     const titleEl = document.createElement('span');
     titleEl.className = 'pr-title';
@@ -189,12 +181,22 @@ function renderPRs(tabs) {
   }
 }
 
-function makeFallbackIcon() {
+function makeApprovedIcon() {
   const el = document.createElement('span');
-  el.className = 'pr-favicon-fallback';
+  el.className = 'pr-approved';
+  el.title = 'Approved';
   el.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
-    <path d="M5 3.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0ZM5 12.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0ZM12.75 5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z"/>
-    <path d="M4.25 5.25A.75.75 0 0 0 3.5 6v4a.75.75 0 0 0 1.5 0V6a.75.75 0 0 0-.75-.75ZM11.5 7.25a.75.75 0 0 0-.75.75v.5H8a.75.75 0 0 0 0 1.5h2.75v.5a.75.75 0 1 0 1.5 0v-2.5a.75.75 0 0 0-.75-.75Z"/>
+    <path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16Zm3.78-9.72-4.25 4.25a.75.75 0 0 1-1.06 0L4.22 8.28a.75.75 0 0 1 1.06-1.06L7 8.94l3.72-3.72a.75.75 0 1 1 1.06 1.06Z"/>
+  </svg>`;
+  return el;
+}
+
+function makePRIcon() {
+  const el = document.createElement('span');
+  el.className = 'pr-open';
+  el.title = 'Open pull request';
+  el.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14" aria-hidden="true">
+    <path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"/>
   </svg>`;
   return el;
 }

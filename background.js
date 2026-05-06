@@ -243,6 +243,7 @@ async function fetchMyPRs(token) {
     `is:open is:pr author:@me archived:false created:>${since}`,
     `is:open is:pr review-requested:@me archived:false created:>${since}`,
   ];
+  const approvedQuery = `is:open is:pr involves:@me review:approved archived:false created:>${since}`;
 
   const results = new Map();
   const ssoOrgs = new Set();
@@ -268,7 +269,21 @@ async function fetchMyPRs(token) {
     for (const item of data.items) results.set(item.html_url, item);
   }
 
-  return { prs: [...results.values()], ssoOrgs: [...ssoOrgs] };
+  const approvedUrls = new Set();
+  try {
+    const res = await fetch(
+      `https://api.github.com/search/issues?q=${encodeURIComponent(approvedQuery)}&per_page=50&sort=updated`,
+      { headers }
+    );
+    if (res.ok) {
+      const data = await res.json();
+      for (const item of data.items) approvedUrls.add(item.html_url);
+    }
+  } catch {
+    // Don't fail the whole sync if the approval lookup fails.
+  }
+
+  return { prs: [...results.values()], ssoOrgs: [...ssoOrgs], approvedUrls };
 }
 
 async function syncPRTabs() {
@@ -287,7 +302,7 @@ async function syncPRTabs() {
     const windowIds = new Set(foundGroups.map(g => g.windowId));
     for (const windowId of windowIds) await mergeWindowGroups(windowId);
 
-    const { prs, ssoOrgs } = await fetchMyPRs(githubToken);
+    const { prs, ssoOrgs, approvedUrls } = await fetchMyPRs(githubToken);
     const { enabled = true } = await chrome.storage.sync.get('enabled');
     const { groupDismissed = false } = await chrome.storage.local.get('groupDismissed');
 
@@ -335,7 +350,11 @@ async function syncPRTabs() {
     }
 
     await chrome.storage.local.set({
-      lastPRs: prs.map(pr => ({ url: normalizeUrl(pr.html_url), title: pr.title })),
+      lastPRs: prs.map(pr => ({
+        url: normalizeUrl(pr.html_url),
+        title: pr.title,
+        approved: approvedUrls.has(pr.html_url),
+      })),
       syncState: {
         status: 'ok',
         lastSync: Date.now(),
@@ -486,11 +505,15 @@ async function refreshPRList() {
   if (!token) return;
 
   try {
-    const { prs, ssoOrgs } = await fetchMyPRs(token);
+    const { prs, ssoOrgs, approvedUrls } = await fetchMyPRs(token);
     const { enabled = true } = await chrome.storage.sync.get('enabled');
     const { groupDismissed = false } = await chrome.storage.local.get('groupDismissed');
 
-    const newPRs = prs.map(pr => ({ url: normalizeUrl(pr.html_url), title: pr.title }));
+    const newPRs = prs.map(pr => ({
+      url: normalizeUrl(pr.html_url),
+      title: pr.title,
+      approved: approvedUrls.has(pr.html_url),
+    }));
     await chrome.storage.local.set({
       lastPRs: newPRs,
       syncState: { status: 'ok', lastSync: now, total: prs.length, ssoOrgs },
@@ -644,6 +667,7 @@ async function getStatus() {
     return {
       title: pr.title,
       url: pr.url,
+      approved: pr.approved ?? false,
       favIconUrl: tab?.favIconUrl ?? null,
       id: tab?.id ?? null,
       windowId: tab?.windowId ?? null,

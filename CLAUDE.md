@@ -19,10 +19,11 @@ The extension has two runtime contexts that communicate via `chrome.runtime.send
 
 **`background.js`** — Service worker. Owns all state and logic:
 - `windowGroups` (in-memory `Map<windowId, groupId>`) tracks which tab group belongs to each window; persisted to `chrome.storage.session` so it survives service worker restarts
-- `syncPRTabs()` is the core sync function: fetches PRs from GitHub, opens missing tabs, closes tabs for closed PRs, and groups tabs under the "Review Queue" group
+- `syncPRTabs()` is the core sync function: fetches PRs from GitHub, opens missing tabs, closes tabs for closed PRs, and groups tabs under the "Pull Requests" group (`GROUP_TITLE`)
 - GitHub token is stored in `chrome.storage.local` (with one-time migration from legacy `chrome.storage.sync`)
 - `enabled` flag is stored in `chrome.storage.sync`
 - Sync runs on a 15-minute `chrome.alarms` alarm named `pr-sync`, on install/startup, and on-demand via `SYNC_NOW` message
+- Other persistent state in `chrome.storage.local`: `lastPRs` (last sync's PR list, used by popup and by tab-removal logic), `hasCreatedGroup` (one-time flag — sync only creates a *new* group if one has been created before OR one currently exists in any window, to avoid surprising the user on first install), `groupDismissed` (set when the user manually closes the group; suppresses recreation), `githubLogin` (cached `/user` response), `syncState` (drives popup status)
 
 **`popup.js`** — Popup UI. Reads storage directly for display, sends messages to background for actions:
 - Messages: `GET_STATUS`, `SYNC_NOW`, `VALIDATE_TOKEN`, `ENABLE_CHANGED`
@@ -34,6 +35,9 @@ The extension has two runtime contexts that communicate via `chrome.runtime.send
 
 - URL normalization (`normalizeUrl`) collapses PR sub-pages (`/files`, `?query`) to the base PR URL to avoid duplicate tabs
 - `getValidGroupId` validates the cached group ID before using it — service workers restart and the in-memory map can hold stale IDs
+- `mergeWindowGroups` consolidates duplicate "Pull Requests" groups in a single window (Chrome can produce stray duplicates after restarts)
+- `absorbUngroupedPRTabs` pulls any matching PR tabs in the window into the existing group on each sync
 - The GitHub search uses a 60-day `created:>` window to limit results; PRs older than 60 days won't appear
 - SSO org detection reads the `X-GitHub-SSO` response header and surfaces a warning in the popup
 - Fine-grained PATs return no `X-OAuth-Scopes` header — absence of scopes is treated as fine-grained, not as missing scope
+- `waitForSessionRestore` (called on startup) delays sync until tab/group activity has been quiet for ~1.5s, so we don't fight Chrome's session restore and end up creating duplicate tabs

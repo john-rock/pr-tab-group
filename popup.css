@@ -446,6 +446,36 @@ body {
   color: var(--color-accent-text);
 }
 
+.pr-open {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted);
+}
+
+.pr-approved {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #1a7f37;
+}
+
+[data-theme="dark"] .pr-approved {
+  color: #3fb950;
+}
+
+@media (prefers-color-scheme: dark) {
+  [data-theme="system"] .pr-approved {
+    color: #3fb950;
+  }
+}
+
 .pr-title {
   flex: 1;
   overflow: hidden;
